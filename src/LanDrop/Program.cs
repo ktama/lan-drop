@@ -27,7 +27,7 @@ if (error != null || config == null)
 var token = config.Token ?? TokenValidator.GenerateToken();
 var tokenValidator = new TokenValidator(token);
 
-// IP制陁E
+// IP制限
 IpFilter ipFilter;
 try
 {
@@ -114,15 +114,15 @@ app.Lifetime.ApplicationStopping.Register(() =>
     // 停止ログ
     logger.LogStop(new StopLogEntry
     {
-        Reason = stopReason.HasValue 
-            ? LifecycleManager.GetReasonDescription(stopReason.Value) 
+        Reason = stopReason.HasValue
+            ? LifecycleManager.GetReasonDescription(stopReason.Value)
             : "unknown",
         UptimeSeconds = lifecycleManager?.UptimeSeconds ?? 0
     });
-    
+
     lifecycleManager?.Dispose();
     logger.Dispose();
-    
+
     Console.WriteLine("Goodbye.");
 });
 
@@ -142,21 +142,21 @@ app.Use(async (context, next) =>
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "/";
-    
+
     if (!tokenValidator.ValidatePath(path, out var remainingPath))
     {
         context.Response.StatusCode = 404;
         await context.Response.WriteAsync("Not Found");
         return;
     }
-    
-    // 残りのパスを保孁E
+
+    // 残りのパスを保存
     context.Items["RemainingPath"] = remainingPath;
     context.Items["Token"] = token;
-    
-    // アクチE��ビティ記録
+
+    // アクティビティ記録
     lifecycleManager?.RecordActivity();
-    
+
     await next();
 });
 
@@ -165,14 +165,14 @@ app.Map($"/{token}/", async context =>
 {
     var sw = Stopwatch.StartNew();
     var html = IndexHandler.GenerateHtml(
-        config, 
-        token, 
-        port, 
+        config,
+        token,
+        port,
         lifecycleManager?.RemainingTtlMinutes ?? config.TtlMinutes);
-    
+
     context.Response.ContentType = "text/html; charset=utf-8";
     await context.Response.WriteAsync(html);
-    
+
     sw.Stop();
     logger.Log(AccessLogger.CreateEntry(
         context, "/", null, null, null, 200, Encoding.UTF8.GetByteCount(html), (int)sw.ElapsedMilliseconds));
@@ -183,12 +183,12 @@ app.Map($"/{token}/browse", async context =>
     var sw = Stopwatch.StartNew();
     var area = context.Request.Query["area"].ToString();
     var path = context.Request.Query["path"].ToString();
-    
+
     await BrowseHandler.HandleAsync(context, config, sharedValidator, uploadsValidator);
-    
+
     sw.Stop();
     logger.Log(AccessLogger.CreateEntry(
-        context, "/browse", $"area={area}&path={path}", area, path, 
+        context, "/browse", $"area={area}&path={path}", area, path,
         context.Response.StatusCode, 0, (int)sw.ElapsedMilliseconds));
 });
 
@@ -196,12 +196,12 @@ app.Map($"/{token}/dl", async context =>
 {
     var sw = Stopwatch.StartNew();
     var path = context.Request.Query["path"].ToString();
-    
+
     var bytes = await DownloadHandler.HandleAsync(context, sharedValidator, "shared");
-    
+
     sw.Stop();
     logger.Log(AccessLogger.CreateEntry(
-        context, "/dl", $"path={path}", "shared", path, 
+        context, "/dl", $"path={path}", "shared", path,
         context.Response.StatusCode, bytes, (int)sw.ElapsedMilliseconds));
 });
 
@@ -209,7 +209,7 @@ app.Map($"/{token}/udl", async context =>
 {
     var sw = Stopwatch.StartNew();
     var path = context.Request.Query["path"].ToString();
-    
+
     // uploadsディレクトリが存在しない場合
     if (!Directory.Exists(config.UploadsDir))
     {
@@ -220,12 +220,12 @@ app.Map($"/{token}/udl", async context =>
             context, "/udl", $"path={path}", "uploads", path, 404, 0, (int)sw.ElapsedMilliseconds));
         return;
     }
-    
+
     var bytes = await DownloadHandler.HandleAsync(context, uploadsValidator, "uploads");
-    
+
     sw.Stop();
     logger.Log(AccessLogger.CreateEntry(
-        context, "/udl", $"path={path}", "uploads", path, 
+        context, "/udl", $"path={path}", "uploads", path,
         context.Response.StatusCode, bytes, (int)sw.ElapsedMilliseconds));
 });
 
@@ -237,15 +237,15 @@ app.Map($"/{token}/upload", async context =>
         await context.Response.WriteAsJsonAsync(new { success = false, error = "Method not allowed", code = "METHOD_NOT_ALLOWED" });
         return;
     }
-    
+
     var sw = Stopwatch.StartNew();
     var path = context.Request.Query["path"].ToString();
-    
+
     var bytes = await UploadHandler.HandleAsync(context, config, uploadsValidator);
-    
+
     sw.Stop();
     logger.Log(AccessLogger.CreateEntry(
-        context, "/upload", $"path={path}", "uploads", path, 
+        context, "/upload", $"path={path}", "uploads", path,
         context.Response.StatusCode, bytes, (int)sw.ElapsedMilliseconds));
 });
 
@@ -263,7 +263,7 @@ var url = $"http://{localIp}:{port}/{token}/";
 Console.WriteLine("""
 
     LAN Drop v1.0.0
-    ════════════════════════════════════════════════════════════
+    ========================================================================================================================
     """);
 Console.WriteLine($"  Root:     {config.RootDir}");
 Console.WriteLine($"  URL:      {url}");
@@ -280,7 +280,7 @@ if (config.ReadOnly)
     Console.WriteLine("  Mode:     READ ONLY (uploads disabled)");
 }
 Console.WriteLine("""
-    ════════════════════════════════════════════════════════════
+    ========================================================================================================================
       Press Ctrl+C to stop.
     
     """);
@@ -309,7 +309,7 @@ if (config.OpenBrowser)
     }
 }
 
-// 実衁E
+// 実行
 await app.RunAsync();
 
 return 0;
