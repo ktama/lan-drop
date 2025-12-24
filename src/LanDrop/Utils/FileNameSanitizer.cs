@@ -16,7 +16,11 @@ public static class FileNameSanitizer
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     // ファイル名に使えない文字（FrozenSetでO(1)検索）
-    private static readonly FrozenSet<char> InvalidChars = Path.GetInvalidFileNameChars().ToFrozenSet();
+    // Windows互換性のため、すべてのプラットフォームで同じ文字セットを使用
+    private static readonly FrozenSet<char> InvalidChars = Path.GetInvalidFileNameChars()
+        .Concat(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+        .Distinct()
+        .ToFrozenSet();
 
     /// <summary>
     /// ファイル名をサニタイズ

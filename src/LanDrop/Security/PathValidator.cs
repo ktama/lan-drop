@@ -9,7 +9,7 @@ public sealed class PathValidator
 {
     private readonly string _rootFullPath;
     private readonly string _rootWithSeparator;
-    
+
     // Windowsの予約名
     private static readonly FrozenSet<string> ReservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -17,7 +17,7 @@ public sealed class PathValidator
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-    
+
     // パスに使えない文字
     private static readonly char[] InvalidPathChars = Path.GetInvalidPathChars()
         .Concat(new[] { '<', '>', '"', '|', '?', '*' })
@@ -48,31 +48,31 @@ public sealed class PathValidator
             return true;
         }
 
-        // 絶対パス拒否
-        if (Path.IsPathRooted(relativePath))
+        // UNCパス拒否（Linux上でも検出するためPath.IsPathRootedより先にチェック）
+        if (relativePath.StartsWith(@"\\") || relativePath.StartsWith("//"))
         {
             errorCode = "ABSOLUTE_PATH";
             return false;
         }
 
-        // UNCパス拒否
-        if (relativePath.StartsWith(@"\\") || relativePath.StartsWith("//"))
+        // ドライブレター拒否（C: 等）- Linux上でも検出するためPath.IsPathRootedより先にチェック
+        if (relativePath.Length >= 2 && char.IsAsciiLetter(relativePath[0]) && relativePath[1] == ':')
         {
-            errorCode = "UNC_PATH";
+            errorCode = "ABSOLUTE_PATH";
             return false;
         }
 
-        // ドライブレター拒否（C: 等）
-        if (relativePath.Length >= 2 && relativePath[1] == ':')
+        // 絶対パス拒否（POSIX形式: /path や Windows形式: \path）
+        if (Path.IsPathRooted(relativePath) || relativePath.StartsWith("\\") || relativePath.StartsWith("/"))
         {
-            errorCode = "DRIVE_LETTER";
+            errorCode = "ABSOLUTE_PATH";
             return false;
         }
 
         // パストラバーサル拒否（..を含む場合）
         var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
         var segments = normalized.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-        
+
         if (segments.Any(s => s == ".."))
         {
             errorCode = "PATH_TRAVERSAL";
@@ -106,7 +106,7 @@ public sealed class PathValidator
         {
             var combined = Path.Combine(_rootFullPath, normalized);
             var resolvedPath = Path.GetFullPath(combined);
-            
+
             // ルート配下かチェック（境界条件も考慮）
             if (!resolvedPath.Equals(_rootFullPath, StringComparison.OrdinalIgnoreCase) &&
                 !resolvedPath.StartsWith(_rootWithSeparator, StringComparison.OrdinalIgnoreCase))
@@ -141,7 +141,7 @@ public sealed class PathValidator
         {
             // ファイルまたはディレクトリが存在する場合のみ検証
             FileSystemInfo? info = null;
-            
+
             if (File.Exists(path))
             {
                 info = new FileInfo(path);
@@ -150,7 +150,7 @@ public sealed class PathValidator
             {
                 info = new DirectoryInfo(path);
             }
-            
+
             if (info == null)
             {
                 // 存在しないパスはOK（後でファイル作成などに使う場合）
