@@ -70,14 +70,18 @@ public sealed class PathValidator
         }
 
         // パストラバーサル拒否（..を含む場合）
-        var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
-        var segments = normalized.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        // 両方のセパレータを統一して分割
+        var segments = relativePath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
 
         if (segments.Any(s => s == ".."))
         {
             errorCode = "PATH_TRAVERSAL";
             return false;
         }
+
+        // 正規化（Path.Combineで使用するため）
+        var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar)
+                                     .Replace('\\', Path.DirectorySeparatorChar);
 
         // 禁止文字チェック
         if (relativePath.IndexOfAny(InvalidPathChars) >= 0)
