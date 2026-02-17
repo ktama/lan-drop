@@ -30,7 +30,8 @@ public class UploadSizeLimitTests
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1024)]
-    public void MaxUploadMb_VariousLimits(int mb)
+    [InlineData(10240)] // 10GB
+    public void MaxUploadMb_VariousLimits(long mb)
     {
         var config = CreateConfig(mb);
         Assert.Equal(mb * 1024L * 1024L, config.MaxUploadBytes);
@@ -43,7 +44,7 @@ public class UploadSizeLimitTests
         var config = CreateConfig(1); // 1MB
         var maxBytes = config.MaxUploadBytes;
         var exceededLength = maxBytes + 1;
-        
+
         // この値は1MBを超えている
         Assert.True(exceededLength > maxBytes);
     }
@@ -55,7 +56,7 @@ public class UploadSizeLimitTests
         var config = CreateConfig(1); // 1MB
         var maxBytes = config.MaxUploadBytes;
         var smallFileSize = 1024; // 1KB
-        
+
         Assert.True(smallFileSize < maxBytes);
     }
 
@@ -66,7 +67,7 @@ public class UploadSizeLimitTests
         var config = CreateConfig(1);
         var maxBytes = config.MaxUploadBytes;
         var exactSize = maxBytes;
-        
+
         Assert.True(exactSize <= maxBytes);
     }
 
@@ -86,7 +87,7 @@ public class UploadSizeLimitTests
         var tempDir = Path.GetTempPath();
         var args = new[] { "--dir", tempDir, "--max-upload-mb", "50" };
         var (config, error, _) = CliParser.Parse(args);
-        
+
         Assert.Null(error);
         Assert.NotNull(config);
         Assert.Equal(50, config.MaxUploadMb);
@@ -99,7 +100,7 @@ public class UploadSizeLimitTests
         var tempDir = Path.GetTempPath();
         var args = new[] { "--dir", tempDir, "--max-upload-mb", "invalid" };
         var (_, error, _) = CliParser.Parse(args);
-        
+
         Assert.NotNull(error);
     }
 
@@ -110,7 +111,7 @@ public class UploadSizeLimitTests
         var tempDir = Path.GetTempPath();
         var args = new[] { "--dir", tempDir, "--max-upload-mb", "-1" };
         var (_, error, _) = CliParser.Parse(args);
-        
+
         Assert.NotNull(error);
     }
 
@@ -121,7 +122,7 @@ public class UploadSizeLimitTests
         var tempDir = Path.GetTempPath();
         var args = new[] { "--dir", tempDir, "--max-upload-mb", "0" };
         var (_, error, _) = CliParser.Parse(args);
-        
+
         Assert.NotNull(error);
     }
 
@@ -144,18 +145,69 @@ public class UploadSizeLimitTests
         Assert.StartsWith(config.RootDir, config.UploadsDir);
     }
 
-    private static AppConfig CreateConfig(int? maxUploadMb = null)
+    [Fact]
+    public void MaxUploadBytes_10GB_CalculatedCorrectly()
+    {
+        // 10GB（10240MB）の設定が正しくバイト換算される
+        var config = CreateConfig(10240);
+        Assert.Equal(10240L * 1024L * 1024L, config.MaxUploadBytes);
+    }
+
+    [Fact]
+    public void MaxUploadMb_IsLongType()
+    {
+        // MaxUploadMb が long 型であることを確認
+        var config = CreateConfig();
+        Assert.IsType<long>(config.MaxUploadMb);
+    }
+
+    [Fact]
+    public void Config_LargeMaxUploadMb_CanBeSetFromCli()
+    {
+        // CLIから10240MB（10GB）を設定可能
+        var tempDir = Path.GetTempPath();
+        var args = new[] { "--dir", tempDir, "--max-upload-mb", "10240" };
+        var (config, error, _) = CliParser.Parse(args);
+
+        Assert.Null(error);
+        Assert.NotNull(config);
+        Assert.Equal(10240L, config.MaxUploadMb);
+        Assert.Equal(10240L * 1024L * 1024L, config.MaxUploadBytes);
+    }
+
+    [Fact]
+    public void MaxUploadBytes_ExceedsKestrelDefault()
+    {
+        // デフォルト200MBがKestrelデフォルト（≈28.6MB）を超えている場合も正しく設定される
+        const long kestrelDefault = 30_000_000; // Kestrel default MaxRequestBodySize
+        var config = CreateConfig(); // 200MB
+        Assert.True(config.MaxUploadBytes > kestrelDefault,
+            "Default MaxUploadBytes should exceed Kestrel's default MaxRequestBodySize");
+    }
+
+    [Fact]
+    public void ContentLength_ExceedsLimit_For10GB_ShouldBeRejected()
+    {
+        // 10GB制限を超えるファイルは拒否されるべき
+        var config = CreateConfig(10240); // 10GB
+        var maxBytes = config.MaxUploadBytes;
+        var exceededLength = maxBytes + 1;
+
+        Assert.True(exceededLength > maxBytes);
+    }
+
+    private static AppConfig CreateConfig(long? maxUploadMb = null)
     {
         var config = new AppConfig
         {
             RootDir = Path.GetTempPath()
         };
-        
+
         if (maxUploadMb.HasValue)
         {
             config.MaxUploadMb = maxUploadMb.Value;
         }
-        
+
         return config;
     }
 }

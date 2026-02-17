@@ -19,7 +19,7 @@ public static class CliParser
         int idleMinutes = 30;
         string? token = null;
         string? allowedCidrs = null;
-        int maxUploadMb = 200;
+        long maxUploadMb = 200;
         string? logPath = null;
         bool openBrowser = false;
         bool readOnly = false;
@@ -74,7 +74,7 @@ public static class CliParser
 
                 case "--max-upload-mb":
                     if (i + 1 >= args.Length) return (null, "--max-upload-mb requires a number argument", false);
-                    if (!int.TryParse(args[++i], out var maxMb) || maxMb < 1)
+                    if (!long.TryParse(args[++i], out var maxMb) || maxMb < 1)
                         return (null, "--max-upload-mb must be a positive number", false);
                     maxUploadMb = maxMb;
                     break;

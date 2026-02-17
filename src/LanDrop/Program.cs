@@ -98,6 +98,9 @@ builder.WebHost.ConfigureKestrel(options =>
     {
         options.Listen(IPAddress.Parse(config.BindAddress), port);
     }
+
+    // リクエストボディサイズ制限をアプリ設定と一致させる
+    options.Limits.MaxRequestBodySize = config.MaxUploadBytes;
 });
 
 // ログを最小限に

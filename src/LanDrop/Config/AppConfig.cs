@@ -27,7 +27,7 @@ public sealed class AppConfig
     public string? AllowedCidrs { get; set; }
 
     /// <summary>最大アップロードサイズ（MB）</summary>
-    public int MaxUploadMb { get; set; } = 200;
+    public long MaxUploadMb { get; set; } = 200;
 
     /// <summary>ログファイルパス</summary>
     public string? LogPath { get; set; }

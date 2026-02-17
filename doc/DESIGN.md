@@ -270,13 +270,19 @@ public class PathValidator
 
 ### 3.4 アップロード制限
 
-| 項目       | 仕様                                                             |
-| ---------- | ---------------------------------------------------------------- |
-| 最大サイズ | `--max-upload-mb`（デフォルト200MB）                             |
-| 検証方法   | `Content-Length` ヘッダー事前検証 + ストリーム読み取り時カウント |
-| 超過時     | 413 Payload Too Large（即座に接続切断）                          |
-| ファイル名 | サニタイズ（`Path.GetInvalidFileNameChars()` 除去）              |
-| 拡張子     | 制限なし（将来的にブラックリスト追加可）                         |
+| 項目                | 仕様                                                             |
+| ------------------- | ---------------------------------------------------------------- |
+| 最大サイズ          | `--max-upload-mb`（デフォルト200MB、`long`型で10GB超も指定可能） |
+| Kestrel制限         | `MaxRequestBodySize` をアプリ設定と一致させて設定                |
+| FormOptions制限     | `MultipartBodyLengthLimit` をアプリ設定と一致させて設定          |
+| 検証方法            | `Content-Length` ヘッダー事前検証 + ストリーム読み取り時カウント |
+| 超過時              | 413 Payload Too Large                                            |
+| ファイル名          | サニタイズ（`Path.GetInvalidFileNameChars()` 除去）              |
+| 拡張子              | 制限なし（将来的にブラックリスト追加可）                         |
+
+> **Note**: Kestrel の `MaxRequestBodySize`（デフォルト ≈ 28.6MB）を明示的に設定しないと、
+> `FormOptions.MultipartBodyLengthLimit` の値に関わらずデフォルト制限で接続が切断される。
+> 両方の制限を `config.MaxUploadBytes` に一致させることで、指定サイズまでのアップロードを保証する。
 
 ### 3.5 上書き防止
 
