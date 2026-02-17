@@ -44,37 +44,72 @@ public static class NetworkUtils
         return addresses;
     }
 
+    public static IReadOnlyList<string> GetPreferredLocalIps()
+    {
+        var candidates = new List<(string Address, bool HasGateway)>();
+
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up)
+                    continue;
+
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    continue;
+
+                var props = ni.GetIPProperties();
+                var hasGateway = props.GatewayAddresses.Any(g =>
+                    g.Address.AddressFamily == AddressFamily.InterNetwork &&
+                    !IPAddress.IsLoopback(g.Address) &&
+                    !IPAddress.Any.Equals(g.Address));
+
+                foreach (var addr in props.UnicastAddresses)
+                {
+                    if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                    {
+                        candidates.Add((addr.Address.ToString(), hasGateway));
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort; fall back to empty list.
+        }
+
+        return candidates
+            .OrderByDescending(c => c.HasGateway)
+            .ThenBy(c => GetPrivateRangeRank(c.Address))
+            .ThenBy(c => c.Address, StringComparer.Ordinal)
+            .Select(c => c.Address)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
     /// <summary>
     /// 最も可能性の高いローカルIPを取得
     /// </summary>
     public static string? GetPrimaryLocalIp()
     {
-        var addresses = GetLocalIpAddresses().ToList();
-        
-        // 192.168.x.x を優先
-        var preferred = addresses.FirstOrDefault(a => a.StartsWith("192.168."));
-        if (preferred != null) return preferred;
-        
-        // 10.x.x.x を次に優先
-        preferred = addresses.FirstOrDefault(a => a.StartsWith("10."));
-        if (preferred != null) return preferred;
-        
-        // 172.16-31.x.x を次に優先
-        preferred = addresses.FirstOrDefault(a => 
-        {
-            if (!a.StartsWith("172.")) return false;
-            var parts = a.Split('.');
-            if (parts.Length < 2) return false;
-            if (int.TryParse(parts[1], out var second))
-            {
-                return second >= 16 && second <= 31;
-            }
-            return false;
-        });
-        if (preferred != null) return preferred;
-
-        // それ以外は最初のもの
+        var addresses = GetPreferredLocalIps();
         return addresses.FirstOrDefault();
+    }
+
+    private static int GetPrivateRangeRank(string address)
+    {
+        if (address.StartsWith("192.168.", StringComparison.Ordinal)) return 0;
+        if (address.StartsWith("10.", StringComparison.Ordinal)) return 1;
+        if (address.StartsWith("172.", StringComparison.Ordinal))
+        {
+            var parts = address.Split('.');
+            if (parts.Length >= 2 && int.TryParse(parts[1], out var second))
+            {
+                if (second >= 16 && second <= 31) return 2;
+            }
+        }
+        if (address.StartsWith("169.254.", StringComparison.Ordinal)) return 4;
+        return 3;
     }
 
     /// <summary>

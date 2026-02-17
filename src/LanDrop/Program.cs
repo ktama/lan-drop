@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using LanDrop.Config;
 using LanDrop.Handlers;
@@ -68,6 +69,17 @@ else
     port = foundPort.Value;
 }
 
+var displayHosts = string.Equals(config.BindAddress, "0.0.0.0", StringComparison.Ordinal)
+    ? NetworkUtils.GetPreferredLocalIps().ToList()
+    : new List<string> { config.BindAddress };
+
+if (displayHosts.Count == 0)
+{
+    displayHosts.Add("localhost");
+}
+
+var primaryHost = displayHosts[0];
+
 // ASP.NET Core Minimal API セットアップ
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -78,7 +90,14 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 // Kestrel設定
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ListenAnyIP(port);
+    if (string.Equals(config.BindAddress, "0.0.0.0", StringComparison.Ordinal))
+    {
+        options.ListenAnyIP(port);
+    }
+    else
+    {
+        options.Listen(IPAddress.Parse(config.BindAddress), port);
+    }
 });
 
 // ログを最小限に
@@ -168,7 +187,8 @@ app.Map($"/{token}/", async context =>
         config,
         token,
         port,
-        lifecycleManager?.RemainingTtlMinutes ?? config.TtlMinutes);
+        lifecycleManager?.RemainingTtlMinutes ?? config.TtlMinutes,
+        primaryHost);
 
     context.Response.ContentType = "text/html; charset=utf-8";
     await context.Response.WriteAsync(html);
@@ -257,8 +277,7 @@ app.MapFallback(async context =>
 });
 
 // 起動情報表示
-var localIp = NetworkUtils.GetPrimaryLocalIp() ?? "localhost";
-var url = $"http://{localIp}:{port}/{token}/";
+var url = $"http://{primaryHost}:{port}/{token}/";
 
 Console.WriteLine("""
 
@@ -266,7 +285,18 @@ Console.WriteLine("""
     ========================================================================================================================
     """);
 Console.WriteLine($"  Root:     {config.RootDir}");
-Console.WriteLine($"  URL:      {url}");
+if (displayHosts.Count == 1)
+{
+    Console.WriteLine($"  URL:      {url}");
+}
+else
+{
+    Console.WriteLine("  URLs:");
+    foreach (var host in displayHosts)
+    {
+        Console.WriteLine($"    - http://{host}:{port}/{token}/");
+    }
+}
 Console.WriteLine($"  Token:    {token} {(config.Token == null ? "(auto-generated)" : "(user-specified)")}");
 Console.WriteLine($"  TTL:      {config.TtlMinutes} minutes");
 Console.WriteLine($"  Idle:     {config.IdleMinutes} minutes");
@@ -278,6 +308,10 @@ if (ipFilter.HasRestrictions)
 if (config.ReadOnly)
 {
     Console.WriteLine("  Mode:     READ ONLY (uploads disabled)");
+}
+if (config.OpenBrowser && displayHosts.Count > 1)
+{
+    Console.WriteLine("  Note:     Multiple local IPs detected; auto-open skipped.");
 }
 Console.WriteLine("""
     ========================================================================================================================
@@ -297,7 +331,7 @@ logger.LogStart(new StartLogEntry
 });
 
 // ブラウザを開く
-if (config.OpenBrowser)
+if (config.OpenBrowser && displayHosts.Count == 1)
 {
     try
     {

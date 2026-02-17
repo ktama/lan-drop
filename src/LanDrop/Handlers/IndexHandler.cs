@@ -8,10 +8,9 @@ namespace LanDrop.Handlers;
 /// </summary>
 public static class IndexHandler
 {
-    public static string GenerateHtml(AppConfig config, string token, int port, int remainingMinutes)
+    public static string GenerateHtml(AppConfig config, string token, int port, int remainingMinutes, string displayHost)
     {
-        var localIp = Utils.NetworkUtils.GetPrimaryLocalIp() ?? "localhost";
-        var baseUrl = $"http://{localIp}:{port}/{token}";
+        var baseUrl = $"http://{displayHost}:{port}/{token}";
         
         var html = $$"""
             <!DOCTYPE html>
