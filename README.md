@@ -34,29 +34,38 @@ LAN Drop v1.0.0
   URL:      http://192.168.1.10:8000/abc123def456ghi789jkl012/
   Token:    abc123def456ghi789jkl012 (auto-generated)
   TTL:      60 minutes
-  Idle:     15 minutes
-  Log:      access.jsonl
+  Idle:     30 minutes
+  Log:      <exe>\log\lan-drop.log
 ════════════════════════════════════════════════════════════
   Press Ctrl+C to stop.
+```
+
+複数のネットワークインターフェースがある場合は、複数のURLが表示されます：
+
+```
+  URLs:
+    - http://192.168.1.10:8000/abc123def456ghi789jkl012/
+    - http://10.0.0.5:8000/abc123def456ghi789jkl012/
 ```
 
 表示されたURLを共有相手に伝えれば、ブラウザでアクセスできます。
 
 ## コマンドラインオプション
 
-| オプション              | デフォルト            | 説明                       |
-| ----------------------- | --------------------- | -------------------------- |
-| `--dir <path>`          | カレントディレクトリ  | 共有するディレクトリ       |
-| `--port <num>`          | 8000-8100で空きを探索 | 使用するポート番号         |
-| `--ttl <min>`           | 60                    | 最大稼働時間（分）         |
-| `--idle <min>`          | 15                    | アイドルタイムアウト（分） |
-| `--token <str>`         | 自動生成              | URLトークン（24文字推奨）  |
-| `--allow <cidr>`        | なし（全許可）        | 接続を許可するCIDR範囲     |
-| `--max-upload-mb <num>` | 100                   | アップロード最大サイズ(MB) |
-| `--log <path>`          | access.jsonl          | ログファイルパス           |
-| `--open`                | false                 | 起動時にブラウザを開く     |
-| `--readonly`            | false                 | アップロードを無効化       |
-| `--help`                | -                     | ヘルプを表示               |
+| オプション              | デフォルト               | 説明                       |
+| ----------------------- | ------------------------ | -------------------------- |
+| `--dir <path>`          | （必須）                 | 共有するディレクトリ       |
+| `--port <num>`          | 8000-8100で空きを探索    | 使用するポート番号         |
+| `--bind <ip>`           | 0.0.0.0                  | バインドアドレス           |
+| `--ttl <min>`           | 60                       | 最大稼働時間（分）         |
+| `--idle <min>`          | 30                       | アイドルタイムアウト（分） |
+| `--token <str>`         | 自動生成                 | URLトークン（24文字推奨）  |
+| `--allow <cidr>`        | なし（全許可）           | 接続を許可するCIDR範囲     |
+| `--max-upload-mb <num>` | 200                      | アップロード最大サイズ(MB) |
+| `--log <path>`          | `<exe>\log\lan-drop.log` | ログファイルパス           |
+| `--open`                | false                    | 起動時にブラウザを開く     |
+| `--readonly`            | false                    | アップロードを無効化       |
+| `--help`                | -                        | ヘルプを表示               |
 
 ## 使用例
 
@@ -81,6 +90,13 @@ landrop.exe --ttl 480 --idle 30
 
 ```powershell
 landrop.exe --open
+```
+
+### 特定のIPアドレスにバインド
+
+```powershell
+# 特定のインターフェースのみでリッスン
+landrop.exe --bind 192.168.1.10
 ```
 
 ### 固定トークン
@@ -117,16 +133,16 @@ landrop.exe --token MySecretToken12345678
 
 ### 必要環境
 
-- .NET 8 SDK
+- .NET 10 SDK（またはそれ以降）
 
 ### ビルドコマンド
 
 ```powershell
 # 単一exe作成（Windows x64）
-dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
 
 # 出力場所
-# src/landrop/bin/Release/net8.0/win-x64/publish/landrop.exe
+# src/LanDrop/bin/Release/net10.0/win-x64/publish/lan-drop.exe
 ```
 
 ### テスト実行

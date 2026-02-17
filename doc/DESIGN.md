@@ -25,13 +25,13 @@
 
 ### 1.1 技術選定
 
-| 項目            | 選定                             | 理由                                                                 |
-| --------------- | -------------------------------- | -------------------------------------------------------------------- |
-| 言語/ランタイム | C# / .NET 8                      | 単体exe出力可、Windows標準的、HTTP機能内蔵                           |
-| HTTPサーバー    | `HttpListener`                   | 管理者権限不要（localhost以外も`netsh`不要でbind可）、軽量、依存なし |
-| JSON処理        | `System.Text.Json`               | .NET標準、追加依存不要                                               |
-| CLI解析         | 自前実装 or `System.CommandLine` | 依存最小化のため自前推奨                                             |
-| ビルド形式      | Single-file self-contained       | Python不要環境対応、xcopy deploy                                     |
+| 項目            | 選定                       | 理由                                       |
+| --------------- | -------------------------- | ------------------------------------------ |
+| 言語/ランタイム | C# / .NET 10               | 単体exe出力可、Windows標準的、HTTP機能内蔵 |
+| HTTPサーバー    | ASP.NET Core Minimal API   | Kestrelベース、管理者権限不要、高性能      |
+| JSON処理        | `System.Text.Json`         | .NET標準、追加依存不要                     |
+| CLI解析         | 自前実装                   | 依存最小化のため自前実装                   |
+| ビルド形式      | Single-file self-contained | Python不要環境対応、xcopy deploy           |
 
 ### 1.2 アーキテクチャ概要
 
@@ -682,23 +682,39 @@ public async Task ShutdownAsync(StopReason reason)
 
 ### 6.5 コンソール出力
 
+バインドアドレスが `0.0.0.0` の場合、`NetworkUtils.GetPreferredLocalIps()` で取得したローカルIPを表示する。
+複数のネットワークインターフェースがある場合は複数URLを表示し、ブラウザ自動オープンはスキップする。
+`--bind` で特定のIPを指定した場合は、そのIPのみをURLに表示する。
+
+#### 単一IPの場合
 ```
-LAN Share v1.0.0
-────────────────────────────────────────
+LAN Drop v1.0.0
+════════════════════════════════════════
 Root:    C:\Share
 URL:     http://192.168.1.10:8000/xK9mP2...Yz/
 Token:   xK9mP2...Yz (auto-generated)
 TTL:     60 minutes
 Idle:    30 minutes
-Log:     C:\Share\lan-share.log
-────────────────────────────────────────
+Log:     <exe>\log\lan-drop.log
+════════════════════════════════════════
 Press Ctrl+C to stop.
+```
 
-[10:30:45] GET /dl?path=file.txt → 200 (1.2 MB)
-[10:31:02] POST /upload → 200 (report.pdf → report (1).pdf)
-
-Shutting down: idle_timeout (no activity for 30 minutes)
-Goodbye.
+#### 複数IPの場合
+```
+LAN Drop v1.0.0
+════════════════════════════════════════
+Root:    C:\Share
+URLs:
+  - http://192.168.1.10:8000/xK9mP2...Yz/
+  - http://10.0.0.5:8000/xK9mP2...Yz/
+Token:   xK9mP2...Yz (auto-generated)
+TTL:     60 minutes
+Idle:    30 minutes
+Log:     <exe>\log\lan-drop.log
+Note:    Multiple local IPs detected; auto-open skipped.
+════════════════════════════════════════
+Press Ctrl+C to stop.
 ```
 
 ---
@@ -780,24 +796,18 @@ public async Task HandleRequestAsync(HttpListenerContext ctx)
 ### 8.1 プロジェクト構造
 
 ```
-lan-share/
+lan-drop/
 ├── src/
-│   └── LanShare/
-│       ├── LanShare.csproj
-│       ├── Program.cs                 # エントリポイント
+│   └── LanDrop/
+│       ├── LanDrop.csproj
+│       ├── Program.cs                 # エントリポイント（Minimal API）
 │       │
 │       ├── Config/
 │       │   ├── AppConfig.cs           # 設定値クラス
 │       │   └── CliParser.cs           # コマンドライン解析
 │       │
-│       ├── Server/
-│       │   ├── HttpServer.cs          # HttpListener管理
-│       │   ├── Router.cs              # ルーティング
-│       │   └── RequestContext.cs      # リクエストコンテキスト
-│       │
 │       ├── Handlers/
-│       │   ├── IHandler.cs            # ハンドラーインターフェース
-│       │   ├── IndexHandler.cs        # トップページ
+│       │   ├── IndexHandler.cs        # トップページHTML生成
 │       │   ├── BrowseHandler.cs       # ディレクトリ一覧JSON
 │       │   ├── DownloadHandler.cs     # ダウンロード
 │       │   └── UploadHandler.cs       # アップロード
@@ -814,11 +824,7 @@ lan-share/
 │       │   └── LogRotator.cs          # ローテーション
 │       │
 │       ├── Lifecycle/
-│       │   ├── LifecycleManager.cs    # TTL/Idle管理
-│       │   └── StopReason.cs          # 停止理由enum
-│       │
-│       ├── Html/
-│       │   └── TemplateEngine.cs      # HTML生成
+│       │   └── LifecycleManager.cs    # TTL/Idle管理
 │       │
 │       └── Utils/
 │           ├── MimeTypes.cs           # MIME判定
@@ -826,24 +832,26 @@ lan-share/
 │           └── NetworkUtils.cs        # ローカルIP取得等
 │
 ├── tests/
-│   └── LanShare.Tests/
-│       ├── LanShare.Tests.csproj
-│       ├── Security/
-│       │   ├── PathValidatorTests.cs
-│       │   ├── TokenValidatorTests.cs
-│       │   └── IpFilterTests.cs
-│       ├── Handlers/
-│       │   ├── DownloadHandlerTests.cs
-│       │   └── UploadHandlerTests.cs
-│       └── Integration/
-│           └── EndToEndTests.cs
+│   └── LanDrop.Tests/
+│       ├── LanDrop.Tests.csproj
+│       ├── AccessLoggerTests.cs
+│       ├── CidrRangeTests.cs
+│       ├── FileNameSanitizerTests.cs
+│       ├── IndexHandlerTests.cs
+│       ├── IpFilterTests.cs
+│       ├── LogRotatorTests.cs
+│       ├── NetworkUtilsTests.cs
+│       ├── PathValidatorTests.cs
+│       ├── TokenValidatorTests.cs
+│       └── UploadSizeLimitTests.cs
 │
 ├── doc/
-│   └── DESIGN.md                      # 本設計書
+│   ├── DESIGN.md                      # 本設計書
+│   └── PLAN.md                        # 計画書
 │
 ├── .gitignore
 ├── README.md
-└── lan-share.sln
+└── lan-drop.slnx
 ```
 
 ### 8.2 クラス責務一覧
@@ -975,13 +983,13 @@ lan-share/
 ### 10.1 プロジェクトファイル (.csproj)
 
 ```xml
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>lan-share</AssemblyName>
+    <AssemblyName>lan-drop</AssemblyName>
     <Version>1.0.0</Version>
     
     <!-- Single-file settings -->
@@ -993,7 +1001,7 @@ lan-share/
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     
     <!-- Metadata -->
-    <Product>LAN Share</Product>
+    <Product>LAN Drop</Product>
     <Description>Temporary HTTP file sharing tool for LAN</Description>
     <Copyright>2025</Copyright>
   </PropertyGroup>
@@ -1008,24 +1016,24 @@ lan-share/
 
 #### 開発ビルド
 ```powershell
-dotnet build src/LanShare/LanShare.csproj -c Debug
+dotnet build src/LanDrop/LanDrop.csproj -c Debug
 ```
 
 #### リリースビルド（単体exe）
 ```powershell
-dotnet publish src/LanShare/LanShare.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
+dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
 ```
 
 #### 出力
 ```
 publish/
-└── lan-share.exe    # 約15-25MB（トリム後）
+└── lan-drop.exe    # 約15-25MB（トリム後）
 ```
 
 ### 10.3 テスト実行
 
 ```powershell
-dotnet test tests/LanShare.Tests/LanShare.Tests.csproj -c Release --logger "console;verbosity=normal"
+dotnet test tests/LanDrop.Tests/LanDrop.Tests.csproj -c Release --logger "console;verbosity=normal"
 ```
 
 ### 10.4 CI/CD（GitHub Actions例）
@@ -1048,7 +1056,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
       
       - name: Restore
         run: dotnet restore
@@ -1060,33 +1068,33 @@ jobs:
         run: dotnet test -c Release --no-build --verbosity normal
       
       - name: Publish
-        run: dotnet publish src/LanShare/LanShare.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
+        run: dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
       
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lan-share-win-x64
-          path: ./publish/lan-share.exe
+          name: lan-drop-win-x64
+          path: ./publish/lan-drop.exe
 ```
 
 ### 10.5 配布形態
 
-| 形態    | ファイル                       | 用途                     |
-| ------- | ------------------------------ | ------------------------ |
-| 単体exe | `lan-share.exe`                | 通常配布（xcopy deploy） |
-| ZIP     | `lan-share-v1.0.0-win-x64.zip` | GitHub Release           |
+| 形態    | ファイル                      | 用途                     |
+| ------- | ----------------------------- | ------------------------ |
+| 単体exe | `lan-drop.exe`                | 通常配布（xcopy deploy） |
+| ZIP     | `lan-drop-v1.0.0-win-x64.zip` | GitHub Release           |
 
 ### 10.6 動作確認手順
 
 ```powershell
 # 1. 基本起動
-.\lan-share.exe --dir "C:\Share"
+.\lan-drop.exe --dir "C:\Share"
 
 # 2. オプション全指定
-.\lan-share.exe --dir "C:\Share" --port 9000 --bind 192.168.1.10 --ttl 120 --idle 60 --token mytoken123 --allow "192.168.1.0/24" --max-upload-mb 500 --log "C:\Logs\share.log" --open
+.\lan-drop.exe --dir "C:\Share" --port 9000 --bind 192.168.1.10 --ttl 120 --idle 60 --token mytoken123 --allow "192.168.1.0/24" --max-upload-mb 500 --log "C:\Logs\share.log" --open
 
 # 3. 読み取り専用
-.\lan-share.exe --dir "C:\Share" --readonly
+.\lan-drop.exe --dir "C:\Share" --readonly
 ```
 
 ---
@@ -1096,10 +1104,10 @@ jobs:
 ### A. CLI ヘルプ出力例
 
 ```
-LAN Share v1.0.0 - Temporary HTTP file sharing for LAN
+LAN Drop v1.0.0 - Temporary HTTP file sharing for LAN
 
 USAGE:
-    lan-share.exe --dir <path> [options]
+    lan-drop.exe --dir <path> [options]
 
 REQUIRED:
     --dir <path>           Root directory to share
@@ -1112,14 +1120,14 @@ OPTIONS:
     --token <string|auto>  URL token (default: auto)
     --allow <cidr,...>     Allowed IP ranges (default: all)
     --max-upload-mb <n>    Max upload size in MB (default: 200)
-    --log <path>           Log file path (default: <dir>\lan-share.log)
+    --log <path>           Log file path (default: <exe>\log\lan-drop.log)
     --open                 Open URL in browser on start
     --readonly             Disable uploads
 
 EXAMPLES:
-    lan-share.exe --dir "C:\Share"
-    lan-share.exe --dir "C:\Share" --port 9000 --ttl 30
-    lan-share.exe --dir "C:\Share" --allow "192.168.1.0/24,10.0.0.0/8"
+    lan-drop.exe --dir "C:\Share"
+    lan-drop.exe --dir "C:\Share" --port 9000 --ttl 30
+    lan-drop.exe --dir "C:\Share" --allow "192.168.1.0/24,10.0.0.0/8"
 ```
 
 ### B. 将来拡張案
