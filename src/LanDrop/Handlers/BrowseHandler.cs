@@ -65,6 +65,7 @@ public static class BrowseHandler
             var directories = dirInfo.GetDirectories()
                 .Where(d => !d.Attributes.HasFlag(FileAttributes.Hidden))
                 .Where(d => !(area == "shared" && d.Name == AppConfig.UploadsDirName)) // _uploadsは除外
+                .Where(d => validator.TryValidate(GetRelativePath(d.FullName, rootPath), out _, out _)) // 外を指すリンク等は除外
                 .Select(d => new DirectoryItem
                 {
                     Name = d.Name,
@@ -76,6 +77,7 @@ public static class BrowseHandler
             // ファイル一覧
             var files = dirInfo.GetFiles()
                 .Where(f => !f.Attributes.HasFlag(FileAttributes.Hidden))
+                .Where(f => validator.TryValidate(GetRelativePath(f.FullName, rootPath), out _, out _)) // 外を指すリンク・ログファイルは除外
                 .Select(f => new FileItem
                 {
                     Name = f.Name,

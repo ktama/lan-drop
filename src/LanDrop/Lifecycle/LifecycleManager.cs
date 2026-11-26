@@ -31,7 +31,8 @@ public sealed class LifecycleManager : IDisposable
     private readonly IHostApplicationLifetime _lifetime;
     private readonly Action<StopReason>? _onShutdown;
     
-    private DateTime _lastActivity;
+    private long _lastActivityTicks;
+    private int _activeRequests;
     private bool _disposed;
     private StopReason? _stopReason;
 
@@ -46,7 +47,7 @@ public sealed class LifecycleManager : IDisposable
         _lifetime = lifetime;
         _onShutdown = onShutdown;
         _startTime = DateTime.UtcNow;
-        _lastActivity = DateTime.UtcNow;
+        _lastActivityTicks = DateTime.UtcNow.Ticks;
 
         // TTLタイマー（1回のみ発火）
         if (ttlMinutes > 0)
@@ -74,7 +75,51 @@ public sealed class LifecycleManager : IDisposable
     /// </summary>
     public void RecordActivity()
     {
-        _lastActivity = DateTime.UtcNow;
+        Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
+    }
+
+    /// <summary>
+    /// リクエストの処理開始を記録する。戻り値を Dispose すると処理終了として記録する
+    /// </summary>
+    /// <remarks>
+    /// 処理中のリクエスト（大きなファイルの転送など）がある間はアイドルとみなさない。
+    /// 開始時だけ記録すると、アイドル時間より長い転送が途中で打ち切られるため。
+    /// </remarks>
+    public IDisposable TrackRequest()
+    {
+        Interlocked.Increment(ref _activeRequests);
+        RecordActivity();
+        return new RequestScope(this);
+    }
+
+    /// <summary>
+    /// 処理中のリクエスト数
+    /// </summary>
+    public int ActiveRequests => Volatile.Read(ref _activeRequests);
+
+    /// <summary>
+    /// 指定時刻にアイドル状態か（処理中のリクエストがなく、最後の活動からアイドル時間が経過）
+    /// </summary>
+    public bool IsIdleAt(DateTime utcNow)
+    {
+        if (_idleMinutes <= 0 || ActiveRequests > 0)
+            return false;
+
+        var last = new DateTime(Interlocked.Read(ref _lastActivityTicks), DateTimeKind.Utc);
+        return (utcNow - last).TotalMinutes >= _idleMinutes;
+    }
+
+    private sealed class RequestScope(LifecycleManager owner) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            owner.RecordActivity();
+            Interlocked.Decrement(ref owner._activeRequests);
+        }
     }
 
     /// <summary>
@@ -103,8 +148,7 @@ public sealed class LifecycleManager : IDisposable
     {
         if (_disposed) return;
 
-        var idleTime = (DateTime.UtcNow - _lastActivity).TotalMinutes;
-        if (idleTime >= _idleMinutes)
+        if (IsIdleAt(DateTime.UtcNow))
         {
             Shutdown(StopReason.IdleTimeout);
         }

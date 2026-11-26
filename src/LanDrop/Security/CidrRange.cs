@@ -1,12 +1,14 @@
 using System.Net;
+using System.Net.Sockets;
 
 namespace LanDrop.Security;
 
 /// <summary>
-/// CIDRレンジを表すクラス
+/// CIDRレンジを表すクラス（IPv4 / IPv6）
 /// </summary>
 public sealed class CidrRange
 {
+    private readonly AddressFamily _family;
     private readonly byte[] _networkBytes;
     private readonly int _prefixLength;
     private readonly byte[] _mask;
@@ -20,18 +22,23 @@ public sealed class CidrRange
         if (!IPAddress.TryParse(parts[0], out var ip))
             throw new ArgumentException($"Invalid IP address: {parts[0]}");
 
-        if (!int.TryParse(parts[1], out _prefixLength) || _prefixLength < 0 || _prefixLength > 32)
+        // IPv4射影アドレス（::ffff:a.b.c.d）はIPv4として扱う
+        if (ip.IsIPv4MappedToIPv6)
+            ip = ip.MapToIPv4();
+
+        if (ip.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+            throw new ArgumentException($"Unsupported address family: {parts[0]}");
+
+        var maxPrefix = ip.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
+        if (!int.TryParse(parts[1], out _prefixLength) || _prefixLength < 0 || _prefixLength > maxPrefix)
             throw new ArgumentException($"Invalid prefix length: {parts[1]}");
 
-        // IPv4のみサポート
-        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
-            throw new ArgumentException("Only IPv4 is supported");
-
+        _family = ip.AddressFamily;
         _networkBytes = ip.GetAddressBytes();
-        _mask = CreateMask(_prefixLength);
-        
+        _mask = CreateMask(_prefixLength, _networkBytes.Length);
+
         // ネットワークアドレスに正規化
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < _networkBytes.Length; i++)
         {
             _networkBytes[i] = (byte)(_networkBytes[i] & _mask[i]);
         }
@@ -42,23 +49,26 @@ public sealed class CidrRange
     /// </summary>
     public bool Contains(IPAddress ip)
     {
-        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        if (ip.IsIPv4MappedToIPv6)
+            ip = ip.MapToIPv4();
+
+        if (ip.AddressFamily != _family)
             return false;
 
         var ipBytes = ip.GetAddressBytes();
-        
-        for (int i = 0; i < 4; i++)
+
+        for (int i = 0; i < ipBytes.Length; i++)
         {
             if ((ipBytes[i] & _mask[i]) != _networkBytes[i])
                 return false;
         }
-        
+
         return true;
     }
 
-    private static byte[] CreateMask(int prefixLength)
+    private static byte[] CreateMask(int prefixLength, int byteLength)
     {
-        var mask = new byte[4];
+        var mask = new byte[byteLength];
         int fullBytes = prefixLength / 8;
         int remainingBits = prefixLength % 8;
 
@@ -67,7 +77,7 @@ public sealed class CidrRange
             mask[i] = 0xFF;
         }
 
-        if (fullBytes < 4 && remainingBits > 0)
+        if (fullBytes < byteLength && remainingBits > 0)
         {
             mask[fullBytes] = (byte)(0xFF << (8 - remainingBits));
         }

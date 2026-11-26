@@ -1,3 +1,4 @@
+using LanDrop.Security;
 using LanDrop.Utils;
 
 namespace LanDrop.Config;
@@ -27,6 +28,7 @@ public static class CliParser
         string? logPath = null;
         bool openBrowser = false;
         bool readOnly = false;
+        bool noQr = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -78,6 +80,8 @@ public static class CliParser
                 case "--token":
                     if (i + 1 >= args.Length) return (null, "--token requires a string argument", false);
                     var tokenArg = args[++i];
+                    if (tokenArg != "auto" && !TokenValidator.IsValidFormat(tokenArg))
+                        return (null, "--token may contain only letters, digits, '-' and '_'", false);
                     token = tokenArg == "auto" ? null : tokenArg;
                     break;
 
@@ -106,10 +110,15 @@ public static class CliParser
                     readOnly = true;
                     break;
 
+                case "--no-qr":
+                    noQr = true;
+                    break;
+
                 default:
                     if (arg.StartsWith("-"))
                         return (null, $"Unknown option: {arg}", false);
-                    break;
+                    // 引用符の付け忘れ（--dir C:\My Files など）を黙って無視しない
+                    return (null, $"Unexpected argument: {arg} (quote paths that contain spaces)", false);
             }
         }
 
@@ -141,7 +150,8 @@ public static class CliParser
             MaxUploadMb = maxUploadMb,
             LogPath = logPath,
             OpenBrowser = openBrowser,
-            ReadOnly = readOnly
+            ReadOnly = readOnly,
+            NoQr = noQr
         };
 
         return (config, null, false);
@@ -149,8 +159,8 @@ public static class CliParser
 
     public static string GetHelpText()
     {
-        return """
-            LAN Drop v1.0.0 - Temporary HTTP file sharing for LAN
+        return $"""
+            LAN Drop v{AppInfo.Version} - Temporary HTTP file sharing for LAN
 
             USAGE:
                 lan-drop.exe --dir <path> [options]
@@ -171,6 +181,7 @@ public static class CliParser
                 --log <path>           Log file path (default: <exe>\log\lan-drop.log)
                 --open                 Open URL in browser on start
                 --readonly             Disable uploads
+                --no-qr                Do not show the QR code on start
 
             EXAMPLES:
                 lan-drop.exe --dir "C:\Share"

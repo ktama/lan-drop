@@ -1,12 +1,19 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using LanDrop;
 using LanDrop.Config;
 using LanDrop.Handlers;
 using LanDrop.Lifecycle;
 using LanDrop.Logging;
 using LanDrop.Security;
 using LanDrop.Utils;
+
+// 罫線・QRコードのブロック文字を正しく表示するため
+if (!Console.IsOutputRedirected)
+{
+    Console.OutputEncoding = Encoding.UTF8;
+}
 
 // CLI解析
 var (config, error, showHelp) = CliParser.Parse(args);
@@ -41,8 +48,9 @@ catch (ArgumentException ex)
 }
 
 // パス検証器
-var sharedValidator = new PathValidator(config.RootDir);
-var uploadsValidator = new PathValidator(config.UploadsDir);
+// ログファイルが共有フォルダ内にあっても公開しない
+var sharedValidator = new PathValidator(config.RootDir, config.EffectiveLogPath);
+var uploadsValidator = new PathValidator(config.UploadsDir, config.EffectiveLogPath);
 
 // ログ
 var logger = new AccessLogger(config.EffectiveLogPath);
@@ -172,6 +180,20 @@ app.Lifetime.ApplicationStopping.Register(() =>
     Console.WriteLine("Goodbye.");
 });
 
+// ミドルウェア: セキュリティ関連の応答ヘッダ（拒否応答も含め全応答に付ける）
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers.XContentTypeOptions = "nosniff";
+    headers.XFrameOptions = "DENY";
+    // URLにトークンを含むため、外部へのリンクを踏んでも Referer で漏らさない
+    headers["Referrer-Policy"] = "no-referrer";
+    headers.ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'";
+    // トークン入りのページや一覧をキャッシュに残さない（ダウンロードは個別に上書き）
+    headers.CacheControl = "no-store";
+    await next();
+});
+
 // ミドルウェア: IP制限
 app.Use(async (context, next) =>
 {
@@ -200,8 +222,8 @@ app.Use(async (context, next) =>
     context.Items["RemainingPath"] = remainingPath;
     context.Items["Token"] = token;
 
-    // アクティビティ記録
-    lifecycleManager?.RecordActivity();
+    // アクティビティ記録（処理中はアイドル扱いしない）
+    using var activity = lifecycleManager?.TrackRequest();
 
     await next();
 });
@@ -215,13 +237,16 @@ app.Map($"/{token}/", async context =>
         context.Request.Host.HasValue ? context.Request.Host.Host : null,
         context.Connection.LocalIpAddress,
         primaryHost);
+    var nonce = IndexHandler.CreateNonce();
     var html = IndexHandler.GenerateHtml(
         config,
         token,
         port,
         lifecycleManager?.RemainingTtlMinutes ?? config.TtlMinutes,
-        displayHost);
+        displayHost,
+        nonce);
 
+    context.Response.Headers.ContentSecurityPolicy = IndexHandler.ContentSecurityPolicy(nonce);
     context.Response.ContentType = "text/html; charset=utf-8";
     await context.Response.WriteAsync(html);
 
@@ -249,6 +274,8 @@ app.Map($"/{token}/dl", async context =>
     var sw = Stopwatch.StartNew();
     var path = context.Request.Query["path"].ToString();
 
+    // ダウンロードは ETag で再検証できるようにする
+    context.Response.Headers.CacheControl = "private, no-cache";
     var bytes = await DownloadHandler.HandleAsync(context, sharedValidator, "shared");
 
     sw.Stop();
@@ -273,6 +300,7 @@ app.Map($"/{token}/udl", async context =>
         return;
     }
 
+    context.Response.Headers.CacheControl = "private, no-cache";
     var bytes = await DownloadHandler.HandleAsync(context, uploadsValidator, "uploads");
 
     sw.Stop();
@@ -311,9 +339,9 @@ app.MapFallback(async context =>
 // 起動情報表示
 var url = $"http://{primaryHost}:{port}/{token}/";
 
-Console.WriteLine("""
+Console.WriteLine($"""
 
-    LAN Drop v1.0.0
+    LAN Drop v{AppInfo.Version}
     ========================================================================================================================
     """);
 Console.WriteLine($"  Root:     {config.RootDir}");
@@ -341,6 +369,28 @@ if (config.ReadOnly)
 {
     Console.WriteLine("  Mode:     READ ONLY (uploads disabled)");
 }
+if (config.Token != null && config.Token.Length < TokenValidator.RecommendedMinLength)
+{
+    Console.WriteLine($"  Warning:  Token is short ({config.Token.Length} chars). Anyone on the LAN who guesses it can access the files; " +
+                      $"use {TokenValidator.RecommendedMinLength}+ chars or --token auto.");
+}
+if (bindAny || !IPAddress.IsLoopback(bindIp))
+{
+    var publicNetworks = NetworkCategoryDetector.FindPublicNetworks();
+    if (publicNetworks.Count > 0)
+    {
+        Console.WriteLine($"  Warning:  {NetworkCategoryDetector.FormatPublicNetworkWarning(publicNetworks)}");
+    }
+}
+// スマホから開けるよう、先頭のURLをQRコードで表示する
+if (!config.NoQr && !Console.IsOutputRedirected && QrCode.Encode(url) is { } qr)
+{
+    Console.WriteLine();
+    foreach (var line in qr.ToConsoleLines())
+    {
+        Console.WriteLine(line);
+    }
+}
 Console.WriteLine("""
     ========================================================================================================================
       Press Ctrl+C to stop.
@@ -353,7 +403,7 @@ logger.LogStart(new StartLogEntry
     Root = config.RootDir,
     Bind = config.BindAddress,
     Port = port,
-    Token = token,
+    Token = TokenValidator.Mask(token),
     TtlMinutes = config.TtlMinutes,
     IdleMinutes = config.IdleMinutes
 });

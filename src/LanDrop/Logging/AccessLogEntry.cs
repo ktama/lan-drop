@@ -72,7 +72,7 @@ public class StartLogEntry
     public string Event { get; set; } = "start";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "1.0.0";
+    public string Version { get; set; } = AppInfo.Version;
 
     [JsonPropertyName("root")]
     public string? Root { get; set; }
@@ -83,6 +83,7 @@ public class StartLogEntry
     [JsonPropertyName("port")]
     public int Port { get; set; }
 
+    /// <summary>トークン（伏せ字。ログからURLを再現できないようにする）</summary>
     [JsonPropertyName("token")]
     public string? Token { get; set; }
 

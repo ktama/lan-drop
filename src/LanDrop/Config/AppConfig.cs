@@ -38,6 +38,9 @@ public sealed class AppConfig
     /// <summary>起動後にブラウザを開く</summary>
     public bool OpenBrowser { get; set; }
 
+    /// <summary>起動時にQRコードを表示しない</summary>
+    public bool NoQr { get; set; }
+
     /// <summary>読み取り専用モード</summary>
     public bool ReadOnly { get; set; }
 

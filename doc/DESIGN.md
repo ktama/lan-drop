@@ -123,8 +123,11 @@
 - **ヘッダー**:
   - `Content-Type`: MIMEタイプ（判定不可時は `application/octet-stream`）
   - `Content-Disposition`: `attachment; filename="<name>"; filename*=UTF-8''<encoded>`
-  - `Content-Length`: ファイルサイズ
-- **ステータス**: 200 / 400（パス不正） / 404（ファイルなし）
+  - `Content-Length`: ファイルサイズ（部分取得時は範囲の長さ）
+  - `Accept-Ranges: bytes`、`ETag`、`Last-Modified`
+  - `Cache-Control: private, no-cache`
+- **Range**: `Range: bytes=a-b` に対応（途中からの再開、動画のシーク）。`If-Range` / `If-None-Match` / `If-Modified-Since` も処理する
+- **ステータス**: 200 / 206（部分取得） / 304（未変更） / 400（パス不正） / 404（ファイルなし） / 416（範囲不正）
 
 #### GET `/{token}/udl`
 - **入力**: `path` = UPLOAD_ROOT相対のファイルパス
@@ -135,6 +138,8 @@
 - **入力**: 
   - `path`: アップロード先ディレクトリ（UPLOAD_ROOT相対、空=直下）
   - Body: `multipart/form-data`（field名: `file`）
+- **処理**: `MultipartReader` でストリームのまま読み、保存先へ直接書き込む（一時ファイルを経由しない）
+- **原子性**: 1リクエスト内のファイルは全部保存するか、何も残さないかのどちらか。途中で失敗したら、そのリクエストで作成したファイルをすべて削除する
 - **出力**:
 ```json
 {
@@ -149,6 +154,7 @@
   - 400: パス不正/ファイルなし
   - 403: `--readonly` 時
   - 413: サイズ超過
+  - 500: 保存失敗（作成済みファイルは削除）
 
 ### 2.3 トークン不一致時の挙動
 
@@ -165,7 +171,9 @@
 | 項目     | 仕様                                                       |
 | -------- | ---------------------------------------------------------- |
 | 生成方式 | `RandomNumberGenerator.GetBytes(18)` → Base64URL（24文字） |
-| 文字種   | `[A-Za-z0-9_-]`（URL-safe Base64）                         |
+| 文字種   | `[A-Za-z0-9_-]`（URL-safe Base64）。`--token` 指定時も起動時に検証し、それ以外の文字はエラー（HTML/JSにそのまま埋め込むため） |
+| 短い指定 | 16文字未満の `--token` は起動時に警告                       |
+| ログ     | 起動ログには先頭4文字以外を `*` にした値を記録              |
 | 長さ     | 24〜32文字（autoは24文字固定）                             |
 | 検証     | 定数時間比較（タイミング攻撃対策）                         |
 | 失敗時   | 404（トークン存在を秘匿）                                  |
@@ -185,7 +193,8 @@ public static string GenerateToken()
 
 | 項目           | 仕様                                        |
 | -------------- | ------------------------------------------- |
-| 形式           | CIDR表記（例: `192.168.1.0/24,10.0.0.0/8`） |
+| 形式           | CIDR表記（例: `192.168.1.0/24,10.0.0.0/8,fe80::/10`）。IPv4 / IPv6 両対応 |
+| IPv4射影       | `::ffff:a.b.c.d` はIPv4として判定             |
 | 未指定時       | 制限なし（全IP許可）                        |
 | 検証タイミング | リクエスト受信直後（ハンドラー前）          |
 | 拒否時         | 403 Forbidden                               |
@@ -268,42 +277,63 @@ public class PathValidator
 }
 ```
 
+#### 3.3.3 リンク（シンボリックリンク・ジャンクション）の検証
+
+ルートから対象までの**存在する全要素**について、リンクであれば最終的なリンク先まで解決し、ルート配下（ルート自体がリンクの場合はその実体の配下も可）であることを確認する。
+最後の要素だけを確認すると、途中のディレクトリがルート外へのジャンクションの場合に、その先のファイルへ到達できてしまうため。
+
+- 判定中に例外が起きた場合は拒否する（安全側）
+- ルート外を指すリンクは `/browse` の一覧にも表示しない
+- `--log` のログファイル（ローテーション後の `<path>.N` を含む）が共有ルート内にあっても、一覧・ダウンロードの対象にしない（`FORBIDDEN_PATH`）
+
+検証とファイルを開く処理の間にリンクを差し替えられる競合（TOCTOU）は防げない。共有フォルダに書き込めるのはホスト自身と、`_uploads` へのアップロード（ファイルとディレクトリのみ作成でき、リンクは作成できない）だけである。
+
 ### 3.4 アップロード制限
 
 | 項目            | 仕様                                                             |
 | --------------- | ---------------------------------------------------------------- |
 | 最大サイズ      | `--max-upload-mb`（デフォルト200MB、`long`型で10GB超も指定可能） |
 | Kestrel制限     | `MaxRequestBodySize` をアプリ設定と一致させて設定                |
-| FormOptions制限 | `MultipartBodyLengthLimit` をアプリ設定と一致させて設定          |
+| 読み取り方式    | `MultipartReader` によるストリーム保存（`FormOptions` のバッファリングは使わない） |
 | 検証方法        | `Content-Length` ヘッダー事前検証 + ストリーム読み取り時カウント |
 | 超過時          | 413 Payload Too Large                                            |
 | ファイル名      | サニタイズ（`Path.GetInvalidFileNameChars()` 除去）              |
 | 拡張子          | 制限なし（将来的にブラックリスト追加可）                         |
 
-> **Note**: Kestrel の `MaxRequestBodySize`（デフォルト ≈ 28.6MB）を明示的に設定しないと、
-> `FormOptions.MultipartBodyLengthLimit` の値に関わらずデフォルト制限で接続が切断される。
-> 両方の制限を `config.MaxUploadBytes` に一致させることで、指定サイズまでのアップロードを保証する。
+> **Note**: Kestrel の `MaxRequestBodySize`（デフォルト ≈ 28.6MB）を明示的に設定しないと、デフォルト制限で接続が切断される。
+> `config.MaxUploadBytes` に一致させることで、指定サイズまでのアップロードを保証する。
+> チャンク転送などで `Content-Length` が無い場合は、読み込み中に Kestrel が上限超過（413）を通知し、作成済みのファイルを削除して 413 を返す。
 
 ### 3.5 上書き防止
 
+存在確認と作成を別々に行うと、同名の同時アップロードで両方が同じ空き名を選び、後の方が上書きする。
+`FileMode.CreateNew` で作成し、既にあれば番号を変えて再試行する（`FileNameSanitizer.CreateUniqueFile`）。
+
 ```csharp
-public string GetSafeFileName(string directory, string fileName)
+for (var counter = 0; counter <= 10000; counter++)
 {
-    var baseName = Path.GetFileNameWithoutExtension(fileName);
-    var ext = Path.GetExtension(fileName);
-    var candidate = fileName;
-    var counter = 1;
-    
-    while (File.Exists(Path.Combine(directory, candidate)))
-    {
-        candidate = $"{baseName} ({counter}){ext}";
-        counter++;
-        if (counter > 10000) throw new InvalidOperationException("Too many duplicates");
-    }
-    
-    return candidate;
+    var candidate = counter == 0 ? sanitized : $"{baseName} ({counter}){ext}";
+    try { return new FileStream(Path.Combine(directory, candidate), FileMode.CreateNew, ...); }
+    catch (IOException) when (File.Exists(path) || Directory.Exists(path)) { /* 次の番号 */ }
 }
 ```
+
+### 3.7 応答ヘッダ
+
+| ヘッダ                    | 値                                                     | 対象                     |
+| ------------------------- | ------------------------------------------------------ | ------------------------ |
+| `X-Content-Type-Options`  | `nosniff`                                              | 全応答                   |
+| `X-Frame-Options`         | `DENY`                                                 | 全応答                   |
+| `Referrer-Policy`         | `no-referrer`（URLのトークンを Referer で漏らさない）  | 全応答                   |
+| `Cache-Control`           | `no-store`（ダウンロードは `private, no-cache`）       | 全応答                   |
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'`           | トップページ以外         |
+| `Content-Security-Policy` | `script-src` / `style-src` をリクエストごとの nonce に限定 | トップページ         |
+
+### 3.8 画面でのファイル名の扱い
+
+ファイル名・フォルダ名は利用者が自由に付けられる（アップロード先の `path` でフォルダも作成できる）。
+HTML や JavaScript の文字列連結には使わず、`textContent` と `addEventListener` で DOM を組み立てる。
+`onclick="..."` のようなインラインのイベント属性は使わない（CSP でも禁止される）。
 
 ### 3.6 _uploads ディレクトリ
 
@@ -369,7 +399,7 @@ public string GetSafeFileName(string directory, string fileName)
   "root": "C:\\Share",
   "bind": "0.0.0.0",
   "port": 8000,
-  "token": "abc...xyz",
+  "token": "abcd********************",
   "ttl": 60,
   "idle": 30
 }
@@ -540,7 +570,7 @@ async function loadDir(area, path = '') {
 // ファイル一覧レンダリング
 function renderFileList(area, data) {
   const container = document.querySelector(`.file-list[data-area="${area}"]`);
-  container.innerHTML = '';
+  container.replaceChildren(); // 名前は createItem 内で textContent に入れる
   
   // 親ディレクトリ
   if (data.path) {
@@ -610,7 +640,7 @@ loadDir('uploads', '');
 | トリガー     | 条件                               | 動作                |
 | ------------ | ---------------------------------- | ------------------- |
 | TTL          | 起動から `--ttl` 分経過            | グレースフル停止    |
-| Idle         | 最終リクエストから `--idle` 分経過 | グレースフル停止    |
+| Idle         | 処理中のリクエストがなく、最後のリクエスト終了から `--idle` 分経過 | グレースフル停止    |
 | Ctrl+C       | `Console.CancelKeyPress`           | グレースフル停止    |
 | 致命的エラー | ポートbind失敗等                   | 即時終了（コード1） |
 
@@ -644,10 +674,17 @@ public class LifecycleManager : IDisposable
     }
     
     public void RecordActivity() => _lastActivity = DateTime.UtcNow;
-    
-    private void CheckIdle(int idleMinutes)
+
+    // リクエストの開始と終了を記録する。処理中のリクエストがある間はアイドルとみなさない
+    // （開始時刻だけで判定すると、--idle より長い転送が途中で打ち切られる）
+    public IDisposable TrackRequest() { Interlocked.Increment(ref _active); RecordActivity(); return new Scope(this); }
+
+    public bool IsIdleAt(DateTime utcNow)
+        => _active == 0 && (utcNow - _lastActivity).TotalMinutes >= _idleMinutes;
+
+    private void CheckIdle()
     {
-        if ((DateTime.UtcNow - _lastActivity).TotalMinutes >= idleMinutes)
+        if (IsIdleAt(DateTime.UtcNow))
             Shutdown(StopReason.IdleTimeout);
     }
     
@@ -706,6 +743,17 @@ OSのデフォルトルートの送信元は、UDPソケットを `192.0.2.1` �
 
 `--open` 指定時は、全アドレス待ち受けなら `http://localhost:<port>/<token>/`、特定アドレスならそのアドレスのURLをブラウザで開く。
 自分のPCで開くだけなのでNICの選択は不要であり、候補IPが複数あってもスキップしない。
+
+#### 起動時の追加表示
+
+| 表示                         | 条件                                                         |
+| ---------------------------- | ------------------------------------------------------------ |
+| QRコード                     | 先頭のURLを端末に表示（`--no-qr` 指定時、出力をリダイレクトしている時は表示しない） |
+| 短いトークンの警告           | `--token` が16文字未満                                       |
+| パブリックネットワークの警告 | 接続中のネットワークの種類が「パブリック」（Windows ファイアウォールが受信をブロックしやすい）。NetworkListManager から取得し、取得できなければ表示しない |
+
+QRコードは外部ライブラリを使わず `QrCode`（バイトモード、誤り訂正レベルM、バージョン1〜10）で生成する。
+トップページ下部にも、そのページのURLのQRコードを SVG で表示する。
 
 #### Web画面のURL表示
 
@@ -790,7 +838,9 @@ Press Ctrl+C to stop.
 | ------------------- | ---------------------------- | ---- |
 | `INVALID_PATH`      | パス検証失敗                 | 400  |
 | `PATH_TRAVERSAL`    | パストラバーサル検出         | 400  |
-| `SYMLINK_OUTSIDE`   | シンボリックリンクがルート外 | 400  |
+| `SYMLINK_OUTSIDE`   | 途中を含むリンクがルート外を指す | 400  |
+| `FORBIDDEN_PATH`    | ログファイルなど公開しないパス | 400  |
+| `INVALID_MULTIPART` | multipart の形式不正         | 400  |
 | `FILE_NOT_FOUND`    | ファイルが存在しない         | 404  |
 | `DIR_NOT_FOUND`     | ディレクトリが存在しない     | 404  |
 | `PAYLOAD_TOO_LARGE` | アップロードサイズ超過       | 413  |
@@ -1125,7 +1175,14 @@ jobs:
 | 形態    | ファイル                      | 用途                     |
 | ------- | ----------------------------- | ------------------------ |
 | 単体exe | `lan-drop.exe`                | 通常配布（xcopy deploy） |
-| ZIP     | `lan-drop-v1.0.0-win-x64.zip` | GitHub Release           |
+| ZIP     | `lan-drop-<version>-win-{x64,x86,arm64}.zip` | GitHub Release           |
+
+リリースは `v<version>` タグの push で `.github/workflows/release.yml` が行う。
+
+- タグのバージョンと `LanDrop.csproj` の `<Version>` が一致しない場合は失敗させる（プレリリースは `-` より前を比較）
+- `dotnet publish` に `-p:Version=<version>` を渡し、exe の表示バージョンをタグに揃える
+- ZIP には `lan-drop.exe`、`README.md`、`LICENSE`、`CHANGELOG.md` だけを入れる（`.pdb` や `web.config` は含めない）
+- リリース本文は `CHANGELOG.md` の該当バージョンの節から `.github/scripts/New-ReleaseNotes.ps1` で生成する。節が無い場合は失敗させる
 
 ### 10.6 動作確認手順
 
@@ -1168,6 +1225,7 @@ OPTIONS:
     --log <path>           Log file path (default: <exe>\log\lan-drop.log)
     --open                 Open URL in browser on start
     --readonly             Disable uploads
+    --no-qr                Do not show the QR code on start
 
 EXAMPLES:
     lan-drop.exe --dir "C:\Share"

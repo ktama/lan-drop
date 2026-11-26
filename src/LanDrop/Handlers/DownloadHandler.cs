@@ -1,5 +1,6 @@
 using LanDrop.Security;
 using LanDrop.Utils;
+using Microsoft.Net.Http.Headers;
 
 namespace LanDrop.Handlers;
 
@@ -8,8 +9,6 @@ namespace LanDrop.Handlers;
 /// </summary>
 public static class DownloadHandler
 {
-    private const int BufferSize = 81920; // 80KB
-
     public static async Task<long> HandleAsync(
         HttpContext context,
         PathValidator validator,
@@ -43,37 +42,27 @@ public static class DownloadHandler
         try
         {
             var fileInfo = new FileInfo(fullPath);
-            var fileName = fileInfo.Name;
-            var mimeType = MimeTypes.GetMimeType(fileName);
+            var mimeType = MimeTypes.GetMimeType(fileInfo.Name);
 
-            // レスポンスヘッダー設定
-            context.Response.ContentType = mimeType;
-            context.Response.ContentLength = fileInfo.Length;
-            
-            // Content-Disposition (RFC 5987形式で日本語対応)
-            // ASCII文字のみ抽出（StringBuilderで効率化）
-            var asciiBuilder = new System.Text.StringBuilder(fileName.Length);
-            foreach (var c in fileName)
-            {
-                if (c < 128) asciiBuilder.Append(c);
-            }
-            var asciiName = asciiBuilder.Length > 0 ? asciiBuilder.ToString() : "download";
-            var utf8Encoded = Uri.EscapeDataString(fileName);
-            context.Response.Headers.ContentDisposition = 
-                $"attachment; filename=\"{asciiName}\"; filename*=UTF-8''{utf8Encoded}";
+            // Range（途中からの再開・動画のシーク）、If-Range / If-None-Match に対応する。
+            // ファイル名は Content-Disposition の filename / filename*（RFC 5987）で日本語も扱える。
+            var lastModified = new DateTimeOffset(fileInfo.LastWriteTimeUtc);
+            var etag = new EntityTagHeaderValue($"\"{fileInfo.Length:x}-{fileInfo.LastWriteTimeUtc.Ticks:x}\"");
+            var result = TypedResults.PhysicalFile(
+                fullPath,
+                mimeType,
+                fileDownloadName: fileInfo.Name,
+                lastModified: lastModified,
+                entityTag: etag,
+                enableRangeProcessing: true);
 
-            // ストリーミング転送
-            await using var fileStream = new FileStream(
-                fullPath, 
-                FileMode.Open, 
-                FileAccess.Read, 
-                FileShare.Read, 
-                BufferSize,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            
-            await fileStream.CopyToAsync(context.Response.Body);
+            await result.ExecuteAsync(context);
 
-            return fileInfo.Length;
+            var status = context.Response.StatusCode;
+            return status is StatusCodes.Status200OK or StatusCodes.Status206PartialContent
+                && !HttpMethods.IsHead(context.Request.Method)
+                ? context.Response.ContentLength ?? 0
+                : 0;
         }
         catch (Exception)
         {

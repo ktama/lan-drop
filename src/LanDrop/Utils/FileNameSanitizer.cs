@@ -92,6 +92,41 @@ public static class FileNameSanitizer
     }
 
     /// <summary>
+    /// 重複しない名前でファイルを新規作成して開く
+    /// </summary>
+    /// <remarks>
+    /// 存在確認と作成を別々に行うと、同名の同時アップロードで同じ名前を選んで上書きしてしまう。
+    /// FileMode.CreateNew で作成し、既にあれば番号を変えて再試行することで、作成を原子的にする。
+    /// </remarks>
+    /// <param name="directory">保存先ディレクトリ</param>
+    /// <param name="fileName">元のファイル名</param>
+    /// <param name="savedName">実際に作成したファイル名</param>
+    public static FileStream CreateUniqueFile(string directory, string fileName, out string savedName)
+    {
+        var sanitized = Sanitize(fileName);
+        var baseName = Path.GetFileNameWithoutExtension(sanitized);
+        var ext = Path.GetExtension(sanitized);
+
+        for (var counter = 0; counter <= 10000; counter++)
+        {
+            var candidate = counter == 0 ? sanitized : $"{baseName} ({counter}){ext}";
+            var path = Path.Combine(directory, candidate);
+            try
+            {
+                var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
+                savedName = candidate;
+                return stream;
+            }
+            catch (IOException) when (File.Exists(path) || Directory.Exists(path))
+            {
+                // 同名が既にある（他のリクエストが先に作成した場合を含む）
+            }
+        }
+
+        throw new InvalidOperationException("Too many duplicate files");
+    }
+
+    /// <summary>
     /// ファイル名が有効か判宁E
     /// </summary>
     public static bool IsValidFileName(string fileName)

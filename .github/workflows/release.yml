@@ -48,47 +48,45 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Publish (Windows x64)
-        run: |
-          dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o publish/win-x64
-
-      - name: Publish (Windows x86)
-        run: |
-          dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-x86 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o publish/win-x86
-
-      - name: Publish (Windows ARM64)
-        run: |
-          dotnet publish src/LanDrop/LanDrop.csproj -c Release -r win-arm64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o publish/win-arm64
-
-      - name: Create ZIP archives
+      # タグと csproj の <Version> がずれていると、ローカルビルドとリリースで表示が食い違うため止める
+      # （プレリリースタグ v1.2.0-rc.1 などは、"-" より前を比較する）
+      - name: Check version matches csproj
         shell: pwsh
         run: |
-          Compress-Archive -Path publish/win-x64/* -DestinationPath lan-drop-${{ steps.version.outputs.VERSION }}-win-x64.zip
-          Compress-Archive -Path publish/win-x86/* -DestinationPath lan-drop-${{ steps.version.outputs.VERSION }}-win-x86.zip
-          Compress-Archive -Path publish/win-arm64/* -DestinationPath lan-drop-${{ steps.version.outputs.VERSION }}-win-arm64.zip
+          $tagVersion = '${{ steps.version.outputs.VERSION }}'
+          $csproj = [xml](Get-Content src/LanDrop/LanDrop.csproj -Raw)
+          $projVersion = @($csproj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
+          if ($projVersion -ne $tagVersion.Split('-')[0]) {
+            Write-Error "Tag v$tagVersion does not match <Version>$projVersion</Version> in src/LanDrop/LanDrop.csproj"
+            exit 1
+          }
+
+      # 配布物は exe と README / LICENSE / CHANGELOG のみ（pdb、web.config などは含めない）
+      - name: Publish and package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.VERSION }}'
+          foreach ($rid in 'win-x64', 'win-x86', 'win-arm64') {
+            dotnet publish src/LanDrop/LanDrop.csproj -c Release -r $rid --self-contained true `
+              -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+              -p:Version=$version -o "publish/$rid"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $stage = "package/$rid"
+            New-Item -ItemType Directory -Force $stage | Out-Null
+            Copy-Item "publish/$rid/lan-drop.exe", README.md, LICENSE, CHANGELOG.md -Destination $stage
+            Compress-Archive -Path "$stage/*" -DestinationPath "lan-drop-$version-$rid.zip"
+          }
+
+      - name: Build release notes from CHANGELOG.md
+        shell: pwsh
+        run: ./.github/scripts/New-ReleaseNotes.ps1 -Version '${{ steps.version.outputs.VERSION }}' -OutFile release-notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: LAN Drop v${{ steps.version.outputs.VERSION }}
-          body: |
-            ## LAN Drop v${{ steps.version.outputs.VERSION }}
-            
-            ### ダウンロード
-            
-            | プラットフォーム | ファイル |
-            |-----------------|---------|
-            | Windows x64 | `lan-drop-${{ steps.version.outputs.VERSION }}-win-x64.zip` |
-            | Windows x86 | `lan-drop-${{ steps.version.outputs.VERSION }}-win-x86.zip` |
-            | Windows ARM64 | `lan-drop-${{ steps.version.outputs.VERSION }}-win-arm64.zip` |
-            
-            ### 使用方法
-            
-            1. ZIPファイルをダウンロードして展開
-            2. `lan-drop.exe` を実行
-            3. 表示されたURLを共有相手に伝える
-            
-            詳細は [README](https://github.com/${{ github.repository }}/blob/main/README.md) を参照してください。
+          body_path: release-notes.md
           files: |
             lan-drop-${{ steps.version.outputs.VERSION }}-win-x64.zip
             lan-drop-${{ steps.version.outputs.VERSION }}-win-x86.zip

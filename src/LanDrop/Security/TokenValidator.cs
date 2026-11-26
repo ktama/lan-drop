@@ -11,6 +11,21 @@ public sealed class TokenValidator
     
     public string Token => _token;
 
+    /// <summary>推奨する最小の長さ（これより短いと起動時に警告）</summary>
+    public const int RecommendedMinLength = 16;
+
+    /// <summary>
+    /// トークンに使える文字か（URL・HTML・JavaScript にそのまま埋め込めるよう英数字と "-" "_" に限る）
+    /// </summary>
+    public static bool IsValidFormat(string token)
+        => token.Length > 0 && token.All(c => char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_');
+
+    /// <summary>
+    /// ログ出力用に伏せ字にする（先頭4文字だけ残す）
+    /// </summary>
+    public static string Mask(string token)
+        => token.Length <= 4 ? new string('*', token.Length) : token[..4] + new string('*', token.Length - 4);
+
     public TokenValidator(string? providedToken = null)
     {
         _token = providedToken ?? GenerateToken();

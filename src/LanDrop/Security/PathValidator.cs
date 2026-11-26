@@ -9,6 +9,8 @@ public sealed class PathValidator
 {
     private readonly string _rootFullPath;
     private readonly string _rootWithSeparator;
+    private readonly string _rootRealPath;
+    private readonly string? _hiddenLogPath;
 
     // Windowsの予約名
     private static readonly FrozenSet<string> ReservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -24,10 +26,14 @@ public sealed class PathValidator
         .Distinct()
         .ToArray();
 
-    public PathValidator(string rootDirectory)
+    /// <param name="rootDirectory">公開するルートディレクトリ</param>
+    /// <param name="hiddenLogPath">公開しないログファイルのパス（ローテーションされた "&lt;path&gt;.N" も含む）</param>
+    public PathValidator(string rootDirectory, string? hiddenLogPath = null)
     {
         _rootFullPath = Path.GetFullPath(rootDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         _rootWithSeparator = _rootFullPath + Path.DirectorySeparatorChar;
+        _rootRealPath = ResolveRealPath(_rootFullPath);
+        _hiddenLogPath = hiddenLogPath == null ? null : Path.GetFullPath(hiddenLogPath);
     }
 
     /// <summary>
@@ -119,8 +125,15 @@ public sealed class PathValidator
                 return false;
             }
 
-            // シンボリックリンク検証（可能な範囲で）
-            if (!ValidateSymlink(resolvedPath))
+            // ログファイルは公開しない
+            if (IsHiddenLogFile(resolvedPath))
+            {
+                errorCode = "FORBIDDEN_PATH";
+                return false;
+            }
+
+            // シンボリックリンク・ジャンクション検証（途中の要素も含む）
+            if (!ValidateLinks(resolvedPath))
             {
                 errorCode = "SYMLINK_OUTSIDE";
                 return false;
@@ -137,39 +150,41 @@ public sealed class PathValidator
     }
 
     /// <summary>
-    /// シンボリックリンクがルート外を参照していないか検証
+    /// ルートから対象までの各要素について、リンク（シンボリックリンク・ジャンクション）が
+    /// ルートの外を指していないか検証する
     /// </summary>
-    private bool ValidateSymlink(string path)
+    /// <remarks>
+    /// 最後の要素だけを見ると、途中のディレクトリがルート外へのジャンクションの場合に
+    /// その先のファイルへ到達できてしまうため、存在する全要素を確認する。
+    /// 判定できない場合は拒否する。
+    /// </remarks>
+    private bool ValidateLinks(string resolvedPath)
     {
         try
         {
-            // ファイルまたはディレクトリが存在する場合のみ検証
-            FileSystemInfo? info = null;
-
-            if (File.Exists(path))
-            {
-                info = new FileInfo(path);
-            }
-            else if (Directory.Exists(path))
-            {
-                info = new DirectoryInfo(path);
-            }
-
-            if (info == null)
-            {
-                // 存在しないパスはOK（後でファイル作成などに使う場合）
+            var relative = Path.GetRelativePath(_rootFullPath, resolvedPath);
+            if (relative == ".")
                 return true;
-            }
 
-            // リンクターゲットをチェック
-            var linkTarget = info.LinkTarget;
-            if (linkTarget != null)
+            var current = _rootFullPath;
+            foreach (var segment in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
             {
-                var targetFullPath = Path.GetFullPath(linkTarget, Path.GetDirectoryName(path) ?? _rootFullPath);
-                if (!targetFullPath.Equals(_rootFullPath, StringComparison.OrdinalIgnoreCase) &&
-                    !targetFullPath.StartsWith(_rootWithSeparator, StringComparison.OrdinalIgnoreCase))
+                current = Path.Combine(current, segment);
+
+                // FileInfo はリンク自体を参照する（ディレクトリへのリンクやリンク切れでも LinkTarget を返す）
+                var info = new FileInfo(current);
+                if (info.LinkTarget != null)
                 {
-                    return false;
+                    var target = info.ResolveLinkTarget(returnFinalTarget: true);
+                    if (target == null || !IsUnderRoot(Path.GetFullPath(target.FullName)))
+                        return false;
+                    continue;
+                }
+
+                if (!info.Exists && !Directory.Exists(current))
+                {
+                    // ここから先は存在しない（アップロード先の新規作成など）
+                    return true;
                 }
             }
 
@@ -177,9 +192,54 @@ public sealed class PathValidator
         }
         catch
         {
-            // エラー時は安全側に倒す
-            return true;
+            // 判定できない場合は安全側（拒否）に倒す
+            return false;
         }
+    }
+
+    private bool IsUnderRoot(string fullPath)
+        => IsUnder(fullPath, _rootFullPath) || IsUnder(fullPath, _rootRealPath);
+
+    private static bool IsUnder(string fullPath, string root)
+    {
+        var trimmed = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return trimmed.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// ルート自体がリンクの場合はリンク先の実パスを返す
+    /// </summary>
+    private static string ResolveRealPath(string path)
+    {
+        try
+        {
+            var target = new DirectoryInfo(path).ResolveLinkTarget(returnFinalTarget: true);
+            return target == null
+                ? path
+                : Path.GetFullPath(target.FullName).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    /// <summary>
+    /// ログファイル（ローテーション後の "&lt;path&gt;.N" を含む）か
+    /// </summary>
+    private bool IsHiddenLogFile(string fullPath)
+    {
+        if (_hiddenLogPath == null)
+            return false;
+
+        if (fullPath.Equals(_hiddenLogPath, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var prefix = _hiddenLogPath + ".";
+        return fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+               fullPath.Length > prefix.Length &&
+               fullPath[prefix.Length..].All(char.IsAsciiDigit);
     }
 
     /// <summary>
