@@ -270,15 +270,15 @@ public class PathValidator
 
 ### 3.4 アップロード制限
 
-| 項目                | 仕様                                                             |
-| ------------------- | ---------------------------------------------------------------- |
-| 最大サイズ          | `--max-upload-mb`（デフォルト200MB、`long`型で10GB超も指定可能） |
-| Kestrel制限         | `MaxRequestBodySize` をアプリ設定と一致させて設定                |
-| FormOptions制限     | `MultipartBodyLengthLimit` をアプリ設定と一致させて設定          |
-| 検証方法            | `Content-Length` ヘッダー事前検証 + ストリーム読み取り時カウント |
-| 超過時              | 413 Payload Too Large                                            |
-| ファイル名          | サニタイズ（`Path.GetInvalidFileNameChars()` 除去）              |
-| 拡張子              | 制限なし（将来的にブラックリスト追加可）                         |
+| 項目            | 仕様                                                             |
+| --------------- | ---------------------------------------------------------------- |
+| 最大サイズ      | `--max-upload-mb`（デフォルト200MB、`long`型で10GB超も指定可能） |
+| Kestrel制限     | `MaxRequestBodySize` をアプリ設定と一致させて設定                |
+| FormOptions制限 | `MultipartBodyLengthLimit` をアプリ設定と一致させて設定          |
+| 検証方法        | `Content-Length` ヘッダー事前検証 + ストリーム読み取り時カウント |
+| 超過時          | 413 Payload Too Large                                            |
+| ファイル名      | サニタイズ（`Path.GetInvalidFileNameChars()` 除去）              |
+| 拡張子          | 制限なし（将来的にブラックリスト追加可）                         |
 
 > **Note**: Kestrel の `MaxRequestBodySize`（デフォルト ≈ 28.6MB）を明示的に設定しないと、
 > `FormOptions.MultipartBodyLengthLimit` の値に関わらずデフォルト制限で接続が切断される。
@@ -689,10 +689,47 @@ public async Task ShutdownAsync(StopReason reason)
 ### 6.5 コンソール出力
 
 バインドアドレスが `0.0.0.0` の場合、`NetworkUtils.GetPreferredLocalIps()` で取得したローカルIPを表示する。
-複数のネットワークインターフェースがある場合は複数URLを表示し、ブラウザ自動オープンはスキップする。
-`--bind` で特定のIPを指定した場合は、そのIPのみをURLに表示する。
+複数のネットワークインターフェースがある場合は複数URLを表示する。
+`--bind` または `--interface` で特定のIPを指定した場合は、そのIPのみをURLに表示する。
+
+候補IPの絞り込みと順位（`NetworkUtils.RankCandidates()`）:
+
+| 項目       | 内容                                                                                                        |
+| ---------- | ----------------------------------------------------------------------------------------------------------- |
+| 対象       | 稼働中NICのIPv4ユニキャストアドレス（ループバック、重複検出中・重複状態のアドレスは除く）                   |
+| ノイズ     | 169.254.0.0/16、仮想NIC（Tunnel型、または名前・説明に Hyper-V/vEthernet/WSL/Docker/VPN 等を含む）           |
+| ノイズ処理 | ノイズ以外の候補が1つでもあれば除外。全てノイズなら残す                                                     |
+| 順位       | OSのデフォルトルートの送信元（仮想NIC以外） → ゲートウェイあり → 192.168 → 10 → 172.16-31 → その他 → 数値順 |
+
+OSのデフォルトルートの送信元は、UDPソケットを `192.0.2.1` に `Connect` して `LocalEndPoint` から得る（パケットは送信しない）。
+デフォルトルートの送信元はノイズ扱いしない（Hyper-V外部スイッチでは実LANのIPが vEthernet に付くため）。
+
+`--open` 指定時は、全アドレス待ち受けなら `http://localhost:<port>/<token>/`、特定アドレスならそのアドレスのURLをブラウザで開く。
+自分のPCで開くだけなのでNICの選択は不要であり、候補IPが複数あってもスキップしない。
+
+#### Web画面のURL表示
+
+トップページ下部のURLは、起動時に選んだIPではなく、リクエストごとに `NetworkUtils.ResolveDisplayHost()` で決める。
+
+1. Hostヘッダのホスト部が IPv4/IPv6/DNS名として妥当なら、それを使う（クライアントが実際に到達できたアドレス）
+2. Hostヘッダがループバック（localhost, 127.0.0.1, ::1）なら、起動時の第一候補IPを使う（共有用）
+3. Hostヘッダが無い・不正なら、接続を受けたローカルアドレス（`Connection.LocalIpAddress`）を使う
+
+#### バインドアドレスの検証
+
+| 指定                      | 扱い                                                                |
+| ------------------------- | ------------------------------------------------------------------- |
+| `0.0.0.0` / `*` / `::`    | 全アドレスで待ち受け（Kestrel `ListenAnyIP`、IPv6デュアルスタック） |
+| IPアドレス                | 4オクテット表記のみ受け付ける（`192.168.1` のような省略表記は拒否） |
+| ローカルに無いIP          | 起動時エラー（終了コード1）                                         |
+| `--interface <name>`      | NIC名または説明（大文字小文字を区別しない完全一致）のIPv4にバインド |
+| `--bind` と `--interface` | 同時指定はエラー                                                    |
+
+ポートの空き確認は、Kestrelと同じアドレスファミリー（全アドレスならIPv6デュアルスタック）で、`ExclusiveAddressUse` を付けてバインドを試す。
+Windowsでは、他プロセスが特定NICのアドレスで同じポートを使っていてもワイルドカードへのバインドが成功してしまうため、排他指定で検出する。
 
 #### 単一IPの場合
+
 ```
 LAN Drop v1.0.0
 ════════════════════════════════════════
@@ -707,6 +744,7 @@ Press Ctrl+C to stop.
 ```
 
 #### 複数IPの場合
+
 ```
 LAN Drop v1.0.0
 ════════════════════════════════════════
@@ -718,7 +756,6 @@ Token:   xK9mP2...Yz (auto-generated)
 TTL:     60 minutes
 Idle:    30 minutes
 Log:     <exe>\log\lan-drop.log
-Note:    Multiple local IPs detected; auto-open skipped.
 ════════════════════════════════════════
 Press Ctrl+C to stop.
 ```
@@ -1120,7 +1157,9 @@ REQUIRED:
 
 OPTIONS:
     --port <n>             Port number (default: auto 8000-8100)
-    --bind <ip>            Bind address (default: 0.0.0.0)
+    --bind <ip>            Bind address (default: 0.0.0.0; "::" for IPv6)
+    --interface <name>     Bind to the IPv4 address of a network interface
+                           (e.g. "Wi-Fi", "Ethernet"; cannot be used with --bind)
     --ttl <minutes>        Time-to-live (default: 60)
     --idle <minutes>       Idle timeout (default: 30)
     --token <string|auto>  URL token (default: auto)
@@ -1134,6 +1173,7 @@ EXAMPLES:
     lan-drop.exe --dir "C:\Share"
     lan-drop.exe --dir "C:\Share" --port 9000 --ttl 30
     lan-drop.exe --dir "C:\Share" --allow "192.168.1.0/24,10.0.0.0/8"
+    lan-drop.exe --dir "C:\Share" --interface "Wi-Fi"
 ```
 
 ### B. 将来拡張案

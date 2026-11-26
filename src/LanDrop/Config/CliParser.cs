@@ -1,3 +1,5 @@
+using LanDrop.Utils;
+
 namespace LanDrop.Config;
 
 /// <summary>
@@ -15,6 +17,8 @@ public static class CliParser
         string? rootDir = null;
         int? port = null;
         string bindAddress = "0.0.0.0";
+        bool bindSpecified = false;
+        string? interfaceName = null;
         int ttlMinutes = 60;
         int idleMinutes = 30;
         string? token = null;
@@ -44,7 +48,17 @@ public static class CliParser
 
                 case "--bind":
                     if (i + 1 >= args.Length) return (null, "--bind requires an IP address argument", false);
-                    bindAddress = args[++i];
+                    bindAddress = args[++i].Trim();
+                    if (!NetworkUtils.TryParseBindAddress(bindAddress, out _))
+                        return (null, $"--bind must be an IP address (e.g. 192.168.1.10, 0.0.0.0, ::): {bindAddress}", false);
+                    bindSpecified = true;
+                    break;
+
+                case "--interface":
+                    if (i + 1 >= args.Length) return (null, "--interface requires a network interface name argument", false);
+                    interfaceName = args[++i].Trim();
+                    if (interfaceName.Length == 0)
+                        return (null, "--interface requires a network interface name argument", false);
                     break;
 
                 case "--ttl":
@@ -99,6 +113,11 @@ public static class CliParser
             }
         }
 
+        if (bindSpecified && interfaceName != null)
+        {
+            return (null, "--bind and --interface cannot be used together", false);
+        }
+
         if (string.IsNullOrEmpty(rootDir))
         {
             return (null, "--dir is required", false);
@@ -114,6 +133,7 @@ public static class CliParser
             RootDir = Path.GetFullPath(rootDir),
             Port = port,
             BindAddress = bindAddress,
+            InterfaceName = interfaceName,
             TtlMinutes = ttlMinutes,
             IdleMinutes = idleMinutes,
             Token = token,
@@ -140,7 +160,9 @@ public static class CliParser
 
             OPTIONS:
                 --port <n>             Port number (default: auto 8000-8100)
-                --bind <ip>            Bind address (default: 0.0.0.0)
+                --bind <ip>            Bind address (default: 0.0.0.0; "::" for IPv6)
+                --interface <name>     Bind to the IPv4 address of a network interface
+                                       (e.g. "Wi-Fi", "Ethernet"; cannot be used with --bind)
                 --ttl <minutes>        Time-to-live (default: 60)
                 --idle <minutes>       Idle timeout (default: 30)
                 --token <string|auto>  URL token (default: auto)
@@ -154,6 +176,7 @@ public static class CliParser
                 lan-drop.exe --dir "C:\Share"
                 lan-drop.exe --dir "C:\Share" --port 9000 --ttl 30
                 lan-drop.exe --dir "C:\Share" --allow "192.168.1.0/24,10.0.0.0/8"
+                lan-drop.exe --dir "C:\Share" --interface "Wi-Fi"
             """;
     }
 }

@@ -47,20 +47,44 @@ var uploadsValidator = new PathValidator(config.UploadsDir);
 // ログ
 var logger = new AccessLogger(config.EffectiveLogPath);
 
+// バインドアドレス決定
+IPAddress bindIp;
+if (config.InterfaceName != null)
+{
+    if (!NetworkUtils.TryResolveInterfaceAddress(config.InterfaceName, out var interfaceIp, out var interfaceError))
+    {
+        Console.Error.WriteLine($"Error: {interfaceError}");
+        return 1;
+    }
+    bindIp = interfaceIp!;
+    config.BindAddress = bindIp.ToString();
+}
+else
+{
+    // 書式は CliParser で検証済み
+    NetworkUtils.TryParseBindAddress(config.BindAddress, out bindIp);
+    if (!NetworkUtils.IsAnyAddress(bindIp) && !NetworkUtils.IsAssignedToLocalInterface(bindIp))
+    {
+        Console.Error.WriteLine($"Error: Bind address {bindIp} is not assigned to any network interface on this machine.");
+        return 1;
+    }
+}
+var bindAny = NetworkUtils.IsAnyAddress(bindIp);
+
 // ポート決定
 int port;
 if (config.Port.HasValue)
 {
     port = config.Port.Value;
-    if (!NetworkUtils.IsPortAvailable(port, config.BindAddress))
+    if (!NetworkUtils.IsPortAvailable(port, bindIp))
     {
-        Console.Error.WriteLine($"Error: Port {port} is not available.");
+        Console.Error.WriteLine($"Error: Port {port} is not available on {bindIp} (already in use, possibly on another network interface).");
         return 1;
     }
 }
 else
 {
-    var foundPort = NetworkUtils.FindAvailablePort(8000, 8100, config.BindAddress);
+    var foundPort = NetworkUtils.FindAvailablePort(8000, 8100, bindIp);
     if (!foundPort.HasValue)
     {
         Console.Error.WriteLine("Error: No available port found in range 8000-8100.");
@@ -69,9 +93,9 @@ else
     port = foundPort.Value;
 }
 
-var displayHosts = string.Equals(config.BindAddress, "0.0.0.0", StringComparison.Ordinal)
+var displayHosts = bindAny
     ? NetworkUtils.GetPreferredLocalIps().ToList()
-    : new List<string> { config.BindAddress };
+    : new List<string> { NetworkUtils.FormatHostForUrl(bindIp) };
 
 if (displayHosts.Count == 0)
 {
@@ -90,13 +114,13 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 // Kestrel設定
 builder.WebHost.ConfigureKestrel(options =>
 {
-    if (string.Equals(config.BindAddress, "0.0.0.0", StringComparison.Ordinal))
+    if (bindAny)
     {
         options.ListenAnyIP(port);
     }
     else
     {
-        options.Listen(IPAddress.Parse(config.BindAddress), port);
+        options.Listen(bindIp, port);
     }
 
     // リクエストボディサイズ制限をアプリ設定と一致させる
@@ -186,12 +210,17 @@ app.Use(async (context, next) =>
 app.Map($"/{token}/", async context =>
 {
     var sw = Stopwatch.StartNew();
+    // 複数NICでも、クライアントが実際に接続してきたアドレスでURLを表示する
+    var displayHost = NetworkUtils.ResolveDisplayHost(
+        context.Request.Host.HasValue ? context.Request.Host.Host : null,
+        context.Connection.LocalIpAddress,
+        primaryHost);
     var html = IndexHandler.GenerateHtml(
         config,
         token,
         port,
         lifecycleManager?.RemainingTtlMinutes ?? config.TtlMinutes,
-        primaryHost);
+        displayHost);
 
     context.Response.ContentType = "text/html; charset=utf-8";
     await context.Response.WriteAsync(html);
@@ -312,10 +341,6 @@ if (config.ReadOnly)
 {
     Console.WriteLine("  Mode:     READ ONLY (uploads disabled)");
 }
-if (config.OpenBrowser && displayHosts.Count > 1)
-{
-    Console.WriteLine("  Note:     Multiple local IPs detected; auto-open skipped.");
-}
 Console.WriteLine("""
     ========================================================================================================================
       Press Ctrl+C to stop.
@@ -334,11 +359,13 @@ logger.LogStart(new StartLogEntry
 });
 
 // ブラウザを開く
-if (config.OpenBrowser && displayHosts.Count == 1)
+// 自分のPCで開くだけなのでNICの選択は不要。全アドレス待ち受けなら localhost、特定アドレスならそのアドレスで開く
+if (config.OpenBrowser)
 {
+    var openUrl = bindAny ? $"http://localhost:{port}/{token}/" : url;
     try
     {
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo(openUrl) { UseShellExecute = true });
     }
     catch
     {

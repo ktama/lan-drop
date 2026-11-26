@@ -14,6 +14,9 @@ public sealed class AppConfig
     /// <summary>バインドアドレス</summary>
     public string BindAddress { get; set; } = "0.0.0.0";
 
+    /// <summary>待ち受けるNIC名（--interface。指定時はそのNICのIPv4にバインド）</summary>
+    public string? InterfaceName { get; set; }
+
     /// <summary>TTL（分）</summary>
     public int TtlMinutes { get; set; } = 60;
 
